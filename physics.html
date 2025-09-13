@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TP03 — Ex.6 : Collisions (aframe-physics-system)</title>
+    <style>
+      html, body { height: 100%; margin: 0; background: #000; }
+      .hint {
+        position: fixed; left: 10px; bottom: 10px; color: #ddd; font: 12px/1.3 system-ui,sans-serif;
+        background: #0008; padding: 8px 10px; border-radius: 6px; backdrop-filter: blur(4px); z-index: 10;
+      }
+    </style>
+    <!-- Versions compatibles -->
+    <script src="https://aframe.io/releases/0.9.2/aframe.min.js"></script>
+    <script src="https://unpkg.com/aframe-physics-system@3.3.0/dist/aframe-physics-system.min.js"></script>
+  </head>
+  <body>
+    <div class="hint">ZQSD/WASD pour bouger • Espace pour sauter (au sol) • Heurte les cubes pour tester les collisions</div>
+
+    <a-scene physics="gravity: -9.82" renderer="colorManagement: true">
+      <a-assets>
+        <img id="sky" src="assets/sky.jpg" crossorigin="anonymous">
+        <img id="grass" src="assets/grass.jpg" crossorigin="anonymous">
+      </a-assets>
+
+      <!-- Ciel + lumières -->
+      <a-sky src="#sky"></a-sky>
+      <a-entity light="type: hemisphere; intensity: 0.6; color: #ffffff; groundColor: #445566" position="0 200 0"></a-entity>
+      <a-entity light="type: directional; intensity: 0.8" position="150 200 100"></a-entity>
+
+      <!-- Sol (statique) -->
+      <a-plane id="ground" static-body rotation="-90 0 0" width="140" height="140"
+               material="src:#grass; repeat:40 40; metalness:0; roughness:0.95"></a-plane>
+
+      <!-- Joueur : cube dynamique stabilisé -->
+      <a-entity id="player"
+                geometry="primitive: box; width: 2; height: 2; depth: 2"
+                material="color: #2196f3; metalness:0; roughness:0.85"
+                position="0 2 0"
+                dynamic-body="mass: 5; linearDamping: 0.05; angularDamping: 0.9"
+                wasd-physics="accel: 40; maxSpeed: 10; jumpSpeed: 6">
+      </a-entity>
+
+      <!-- Conteneur des cubes de test -->
+      <a-entity id="cluster"></a-entity>
+
+      <!-- Caméra (libre à la souris / mobile) -->
+      <a-entity position="0 3 12">
+        <a-entity id="cam" camera look-controls position="0 0 0"></a-entity>
+      </a-entity>
+    </a-scene>
+
+    <script>
+      // ===== Composant : déplacement physique + saut fiable + stabilisation =====
+      AFRAME.registerComponent('wasd-physics', {
+        schema: { accel:{default:40}, maxSpeed:{default:10}, jumpSpeed:{default:6} },
+
+        init: function () {
+          // Clavier (ZQSD pris en charge)
+          this.keys = { w:false, a:false, s:false, d:false, space:false };
+          this.onKeyDown = e => {
+            switch (e.code) {
+              case 'KeyW': case 'KeyZ': this.keys.w = true; break;
+              case 'KeyA': case 'KeyQ': this.keys.a = true; break;
+              case 'KeyS':               this.keys.s = true; break;
+              case 'KeyD':               this.keys.d = true; break;
+              case 'Space': e.preventDefault(); this.keys.space = true; break;
+            }
+          };
+          this.onKeyUp = e => {
+            switch (e.code) {
+              case 'KeyW': case 'KeyZ': this.keys.w = false; break;
+              case 'KeyA': case 'KeyQ': this.keys.a = false; break;
+              case 'KeyS':               this.keys.s = false; break;
+              case 'KeyD':               this.keys.d = false; break;
+              case 'Space':              this.keys.space = false; break;
+            }
+          };
+          window.addEventListener('keydown', this.onKeyDown);
+          window.addEventListener('keyup', this.onKeyUp);
+
+          // Corps physique + stabilisation rotation
+          this.body = null;
+          this.grounded = false;
+          this.el.addEventListener('body-loaded', () => {
+            this.body = this.el.body; // CANNON.Body
+            if (this.body) {
+              this.body.angularDamping = 0.9;          // amortit la rotation
+              if (this.body.angularFactor) {
+                this.body.angularFactor.set(0, 1, 0);  // autorise la rotation Y uniquement
+              }
+            }
+          });
+
+          // Détection "au sol" via collisions
+          this._onCollide = (e) => {
+            const otherEl = e.detail.body && e.detail.body.el;
+            if (otherEl) {
+              if (otherEl.id === 'ground' || otherEl.hasAttribute('static-body')) this.grounded = true;
+              const c = e.detail.contact;
+              if (c && Math.abs(c.ni.y) > 0.5) this.grounded = true; // normal quasi verticale
+              if (otherEl.object3D && this.el.object3D.position.y >= otherEl.object3D.position.y) this.grounded = true;
+            }
+          };
+          this.el.addEventListener('collide', this._onCollide);
+
+          // Vecteurs temporaires (repère caméra)
+          this.tempForward = new THREE.Vector3();
+          this.tempRight   = new THREE.Vector3();
+          this.up          = new THREE.Vector3(0,1,0);
+          this.moveDir     = new THREE.Vector3();
+          this.camEl       = document.querySelector('#cam');
+        },
+
+        remove: function () {
+          window.removeEventListener('keydown', this.onKeyDown);
+          window.removeEventListener('keyup', this.onKeyUp);
+          this.el.removeEventListener('collide', this._onCollide);
+        },
+
+        // Check "au sol" robuste (tolérance + Vy faible)
+        isGrounded: function () {
+          if (!this.body) return false;
+          const geom = this.el.getAttribute('geometry') || { height: 2 };
+          const halfH = (geom.height || 2) / 2;
+          const y = this.el.object3D.position.y;
+          const closeToGround = y <= halfH + 0.20;
+          const smallVy = Math.abs(this.body.velocity.y) < 0.20;
+          return this.grounded || (closeToGround && smallVy);
+        },
+
+        tick: function (t, dtMs) {
+          if (!this.body) return;
+          const dt = Math.min(dtMs, 50) / 1000;
+
+          // Base caméra : forward (XZ) & right (XZ)
+          const camObj = this.camEl && this.camEl.object3D;
+          if (camObj) {
+            camObj.getWorldDirection(this.tempForward);
+            this.tempForward.y = 0; this.tempForward.normalize();
+            this.tempRight.copy(this.tempForward).cross(this.up).normalize();
+          } else {
+            this.tempForward.set(0,0,-1);
+            this.tempRight.set(1,0,0);
+          }
+
+          // Directions correctes (W/Z = avancer, S = reculer, D = droite, A/Q = gauche)
+          const f = (this.keys.w ? 1 : 0) - (this.keys.s ? 1 : 0);
+          const r = (this.keys.d ? 1 : 0) - (this.keys.a ? 1 : 0);
+
+          if (f !== 0 || r !== 0) {
+            this.moveDir.set(0,0,0)
+              .addScaledVector(this.tempForward, f)
+              .addScaledVector(this.tempRight, r);
+
+            const len = this.moveDir.length() || 1;
+            this.moveDir.divideScalar(len);
+
+            let vx = this.body.velocity.x + this.moveDir.x * this.data.accel * dt;
+            let vz = this.body.velocity.z + this.moveDir.z * this.data.accel * dt;
+
+            const hs = Math.hypot(vx, vz);
+            if (hs > this.data.maxSpeed) {
+              const s = this.data.maxSpeed / hs; vx *= s; vz *= s;
+            }
+            this.body.velocity.x = vx;
+            this.body.velocity.z = vz;
+          }
+
+          // Saut fiable : seulement au sol + réveil du body
+          if (this.keys.space && this.isGrounded()) {
+            if (this.body.wakeUp) this.body.wakeUp();
+            this.body.velocity.y = this.data.jumpSpeed;
+            this.el.object3D.position.y += 0.01; // évite re-collision immédiate
+            this.grounded = false;
+            this.keys.space = false;
+          }
+
+          // Stabilisation anti-tonneaux
+          this.body.angularVelocity.x *= 0.15;
+          this.body.angularVelocity.z *= 0.15;
+        }
+      });
+
+      // ===== Génération des cubes dynamiques autour du joueur =====
+      const cluster = document.getElementById('cluster');
+      const colors = ['#FF6F61','#FFC107','#4CAF50','#03A9F4','#9C27B0','#FF9800','#795548','#00BCD4'];
+      const rng = (min,max)=> (Math.random()*(max-min)+min);
+
+      // Anneau de cubes qui tombent
+      const ringCount = 16, radius = 10;
+      for (let i=0; i<ringCount; i++) {
+        const ang = (i / ringCount) * Math.PI * 2;
+        const x = Math.cos(ang) * radius;
+        const z = Math.sin(ang) * radius;
+        const y = rng(3, 8);
+        const box = document.createElement('a-box');
+        box.setAttribute('position', `${x} ${y} ${z}`);
+        box.setAttribute('color', colors[i % colors.length]);
+        box.setAttribute('dynamic-body', 'mass: 5; linearDamping: 0.05; angularDamping: 0.2');
+        box.setAttribute('geometry', 'primitive: box; width: 2; height: 2; depth: 2');
+        cluster.appendChild(box);
+      }
+
+      // Petite pile de cubes (réactions en chaîne)
+      const baseX = -6, baseZ = -6;
+      for (let j=0; j<3; j++){
+        for (let i=0; i<3-j; i++){
+          const bx = baseX + i*2.2 + j*1.1;
+          const by = 1 + j*2.05;
+          const b = document.createElement('a-box');
+          b.setAttribute('position', `${bx} ${by} ${baseZ}`);
+          b.setAttribute('color', colors[(j*3+i) % colors.length]);
+          b.setAttribute('dynamic-body', 'mass: 5; linearDamping: 0.05; angularDamping: 0.2');
+          b.setAttribute('geometry', 'primitive: box; width: 2; height: 2; depth: 2');
+          cluster.appendChild(b);
+        }
+      }
+    </script>
+  </body>
+</html>

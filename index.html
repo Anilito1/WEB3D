@@ -1,0 +1,216 @@
+﻿<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TP03 — Ex.4 : Déplacement du cube en fonction de la caméra</title>
+    <style>
+      html, body { height: 100%; }
+      body { margin: 0; overflow: hidden; background: #111; }
+      canvas { display: block; }
+      .hint {
+        position: fixed; left: 10px; bottom: 10px; color: #ddd; font: 12px/1.35 system-ui, sans-serif;
+        background: #0008; padding: 8px 10px; border-radius: 6px; backdrop-filter: blur(4px); z-index: 10;
+      }
+    </style>
+
+    <!-- Import map vers tes libs locales -->
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "./libs/three.module.js"
+      }
+    }
+    </script>
+  </head>
+  <body>
+    <div class="hint">
+      W/A/S/D (Z/Q ok) — mouvement relatif à la caméra • Espace = saut (au sol) • Molette/drag = orbiter/zoomer
+    </div>
+
+    <script type="module">
+      import * as THREE from 'three';
+      import { OrbitControls } from './libs/OrbitControls.js';
+
+      // ====== Scène / Caméra / Rendu ======
+      const scene = new THREE.Scene();
+
+      const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 5000);
+      camera.position.set(120, 120, 160);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.setClearColor(0x202025, 1);
+      document.body.appendChild(renderer.domElement);
+
+      // ====== Lumières ======
+      scene.add(new THREE.AmbientLight(0xffffff, 0.2));
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x445566, 0.6);
+      hemi.position.set(0, 200, 0); scene.add(hemi);
+      const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+      dir.position.set(150, 200, 100); scene.add(dir);
+
+      // (helpers visibles même si textures manquent)
+      scene.add(new THREE.GridHelper(1000, 100, 0x444444, 0x222222));
+      //scene.add(new THREE.AxesHelper(10));
+
+      // ====== Sol (plan) + texture herbe ======
+      const loader = new THREE.TextureLoader();
+      const groundSize = 1000;
+      const grassTex = loader.load('assets/grass.jpg', (tex) => {
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        tex.repeat.set(40, 40);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 8);
+      });
+      const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(groundSize, groundSize),
+        new THREE.MeshStandardMaterial({ map: grassTex, roughness: 0.95, metalness: 0.0 })
+      );
+      ground.rotation.x = -Math.PI / 2;
+      ground.receiveShadow = true;
+      scene.add(ground);
+
+      // ====== Skybox (équirect) ======
+      loader.load('assets/sky.jpg', (skyTex) => {
+        skyTex.mapping = THREE.EquirectangularReflectionMapping;
+        skyTex.colorSpace = THREE.SRGBColorSpace;
+        scene.background = skyTex;
+      });
+
+      // ====== Joueur : cube ======
+      const playerSize = 4;
+      const playerHalf = playerSize / 2;
+      const player = new THREE.Mesh(
+        new THREE.BoxGeometry(playerSize, playerSize, playerSize),
+        new THREE.MeshStandardMaterial({ color: 0x2196f3, metalness: 0.0, roughness: 0.85 })
+      );
+      player.position.set(0, playerHalf, 0);
+      scene.add(player);
+
+      // ====== Contrôles clavier & physique simple ======
+      const keys = { forward: false, back: false, left: false, right: false };
+      const velocity = new THREE.Vector3(0, 0, 0);
+      const params = { accel: 50, decel: 40, maxSpeed: 25, gravity: -98, jumpSpeed: 30 };
+      let isGrounded = true;
+
+      window.addEventListener('keydown', (e) => {
+        switch (e.code) {
+          case 'KeyW': case 'KeyZ': keys.forward = true; break;
+          case 'KeyS': keys.back = true; break;
+          case 'KeyA': case 'KeyQ': keys.left = true; break;
+          case 'KeyD': keys.right = true; break;
+          case 'Space':
+            e.preventDefault();
+            if (isGrounded) { velocity.y = params.jumpSpeed; isGrounded = false; }
+            break;
+        }
+      });
+      window.addEventListener('keyup', (e) => {
+        switch (e.code) {
+          case 'KeyW': case 'KeyZ': keys.forward = false; break;
+          case 'KeyS': keys.back = false; break;
+          case 'KeyA': case 'KeyQ': keys.left = false; break;
+          case 'KeyD': keys.right = false; break;
+        }
+      });
+
+      // ====== Caméra Orbit qui suit le joueur ======
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.enablePan = false;
+      controls.minDistance = 10;
+      controls.maxDistance = 300;
+      controls.minPolarAngle = 0.1;
+      controls.maxPolarAngle = Math.PI/2 - 0.05;
+      controls.target.copy(player.position);
+      controls.update();
+
+      // Vecteurs temporaires pour le mouvement relatif à la caméra
+      const forward = new THREE.Vector3();
+      const right   = new THREE.Vector3();
+      const up      = new THREE.Vector3(0, 1, 0);
+      const moveDir = new THREE.Vector3();
+
+      // ====== Boucle ======
+      let prev = performance.now();
+      function animate() {
+        requestAnimationFrame(animate);
+        const now = performance.now();
+        const dt = Math.min(0.05, (now - prev) / 1000);
+        prev = now;
+
+        // ---- Mouvement RELATIF À LA CAMÉRA ----
+        const inputX = (keys.right ? 1 : 0) + (keys.left ? -1 : 0);
+        const inputZ = (keys.back ? 1 : 0) + (keys.forward ? -1 : 0);
+
+        if (inputX !== 0 || inputZ !== 0) {
+          // base caméra : forward (XZ projeté) & right
+          camera.getWorldDirection(forward);
+          forward.y = 0; forward.normalize();           // garde l’orientation au sol
+          right.copy(forward).cross(up).normalize();    // droite relative caméra
+
+          // W/S = avant/arrière, A/D = gauche/droite (relatifs)
+          moveDir.set(0,0,0)
+            .addScaledVector(forward, -inputZ)  // W => -1 donc avance dans "forward"
+            .addScaledVector(right, inputX);
+
+          // Normalise pour vitesse diagonale constante
+          const len = moveDir.length() || 1;
+          moveDir.divideScalar(len);
+
+          // Accélération + clamp
+          velocity.x += moveDir.x * params.accel * dt;
+          velocity.z += moveDir.z * params.accel * dt;
+
+          const hs = Math.hypot(velocity.x, velocity.z);
+          if (hs > params.maxSpeed) {
+            const s = params.maxSpeed / hs;
+            velocity.x *= s; velocity.z *= s;
+          }
+        } else {
+          // Décélération progressive
+          const hs = Math.hypot(velocity.x, velocity.z);
+          if (hs > 0) {
+            const dec = params.decel * dt;
+            const ns = Math.max(0, hs - dec);
+            if (ns === 0) { velocity.x = 0; velocity.z = 0; }
+            else { const s = ns / hs; velocity.x *= s; velocity.z *= s; }
+          }
+        }
+
+        // Gravité + intégration
+        velocity.y += params.gravity * dt;
+
+        player.position.x += velocity.x * dt;
+        player.position.z += velocity.z * dt;
+        player.position.y += velocity.y * dt;
+
+        // Collision sol (y=0)
+        if (player.position.y < playerHalf) {
+          player.position.y = playerHalf;
+          velocity.y = 0;
+          isGrounded = true;
+        } else {
+          isGrounded = false;
+        }
+
+        // Caméra reste centrée sur le cube
+        controls.target.copy(player.position);
+        controls.update();
+
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      // ====== Resize ======
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    </script>
+  </body>
+</html>
