@@ -2,11 +2,15 @@
 
 Projet en 6 exos : Three.js (Ex.1–4) puis A‑Frame + physics (Ex.5–6).
 
-## Contenu
+SITE POUR TESTER :
 
-* **`index.html`** — Ex.1→4 : plan + skybox, déplacements (accél/décél, saut au sol), caméra orbit qui suit, mouvement **relatif à la caméra**.
-* **`physics.html`** — Ex.5→6 : déplacements + saut avec **aframe-physics-system**, collisions avec plusieurs cubes, rotation du joueur stabilisée.
+https://anilito1.github.io/WEB3D/ 
 
+Ex.1→4 : plan + skybox, déplacements (accél/décél, saut au sol), caméra orbit qui suit, mouvement **relatif à la caméra**.
+
+https://anilito1.github.io/WEB3D/physics.html
+
+ Ex.5→6 : déplacements + saut avec **aframe-physics-system**, collisions avec plusieurs cubes, rotation du joueur stabilisée.
 
 ## Prérequis
 
